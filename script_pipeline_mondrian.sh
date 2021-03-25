@@ -7,8 +7,8 @@ do
     esac
 done
 
-for i in {1..17};
+python3 pipeline_mondrian_full.py --data $dataset --epochs 10 --full_train -ws --tags FULL_SPAIN
+for i in {1..3};
 do
-    python3 pipeline_mondrian_full.py --data $dataset --epochs 5 --split "$i" --full_train
-    python3 pipeline_mondrian_full.py --data $dataset --epochs 5 -ws --split "$i" 
+    python3 pipeline_mondrian_full.py --data $dataset --epochs 10 -ws --split "$i" --tags FULL_SPAIN
 done

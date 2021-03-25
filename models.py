@@ -114,7 +114,7 @@ def reinitialize_tbatches():
     global total_reinitialization_count
 
 # SAVE TRAINED MODEL TO DISK
-def save_model(model, optimizer, args, epoch, user_embeddings, action_embeddings, train_end_idx, user_embeddings_time_series=None, action_embeddings_time_series=None, path=PATH):
+def save_model(model, optimizer, args, epoch, user_embeddings, action_embeddings, train_end_idx, edited_users, user_embeddings_time_series=None, action_embeddings_time_series=None, path=PATH):
     print("*** Saving embeddings and model ***")
     state = {
             'user_embeddings': user_embeddings.data.cpu().numpy(),
@@ -122,7 +122,8 @@ def save_model(model, optimizer, args, epoch, user_embeddings, action_embeddings
             'epoch': epoch,
             'state_dict': model.state_dict(),
             'optimizer' : optimizer.state_dict(),
-            'train_end_idx': train_end_idx
+            'train_end_idx': train_end_idx,
+            'edited_users': edited_users
             }
 
     if user_embeddings_time_series is not None:
@@ -133,14 +134,14 @@ def save_model(model, optimizer, args, epoch, user_embeddings, action_embeddings
     if not os.path.exists(directory):
         os.makedirs(directory)
 
-    filename = os.path.join(directory, "checkpoint.%s.ep%d.tp%.1f.pth.tar" % (args.model, epoch, args.train_proportion))
+    filename = os.path.join(directory, "checkpoint.%s.ep%d.tp%.2f.pth.tar" % (args.model, epoch, args.train_split))
     torch.save(state, filename, pickle_protocol=4)
     print("*** Saved embeddings and model to file: %s ***\n\n" % filename)
 
 # LOAD PREVIOUSLY TRAINED AND SAVED MODEL
 def load_model(model, optimizer, args, epoch):
     modelname = args.model
-    filename = PATH + "saved_models/%s/checkpoint.%s.ep%d.tp%.1f.pth.tar" % (args.data, modelname, epoch, args.train_proportion)
+    filename = PATH + "saved_models/%s/checkpoint.%s.ep%d.tp%.2f.pth.tar" % (args.data, modelname, epoch, args.train_split)
     checkpoint = torch.load(filename)
     print("Loading saved embeddings and model: %s" % filename)
     args.start_epoch = checkpoint['epoch']
@@ -150,6 +151,11 @@ def load_model(model, optimizer, args, epoch):
         train_end_idx = checkpoint['train_end_idx'] 
     except KeyError:
         train_end_idx = None
+    
+    try:
+        edited_users = checkpoint['edited_users'] 
+    except KeyError:
+        edited_users = None
 
     try:
         user_embeddings_time_series = Variable(torch.from_numpy(checkpoint['user_embeddings_time_series']).cuda())
@@ -161,7 +167,7 @@ def load_model(model, optimizer, args, epoch):
     model.load_state_dict(checkpoint['state_dict'])
     optimizer.load_state_dict(checkpoint['optimizer'])
 
-    return (model, optimizer, user_embeddings, action_embeddings, user_embeddings_time_series, action_embeddings_time_series, train_end_idx)
+    return (model, optimizer, user_embeddings, action_embeddings, user_embeddings_time_series, action_embeddings_time_series, train_end_idx, edited_users)
 
 # SET USER AND ITEM EMBEDDINGS TO THE END OF THE TRAINING PERIOD 
 def set_embeddings_training_end(user_embeddings, item_embeddings, user_embeddings_time_series, item_embeddings_time_series, user_data_id, item_data_id, train_end_idx):

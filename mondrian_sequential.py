@@ -9,8 +9,8 @@ import wandb
 
 # FIX THE RANDOM SEED FOR REPRODUCIBILITY
 SEED = 1234
-torch.manual_seed(0)
-np.random.seed(0)
+torch.manual_seed(SEED)
+np.random.seed(SEED)
 torch.backends.cudnn.benchmark = False # reduces the performance
 
 parser = argparse.ArgumentParser()
@@ -19,26 +19,26 @@ parser.add_argument('--model', default="mondrain_v0.1", help='Model name to save
 parser.add_argument('--gpu', default=-1, type=int, help='ID of the gpu to run on. If set to -1 (default), the GPU with most free memory will be chosen.')
 parser.add_argument('--epochs', default=20, type=int, help='Number of epochs to train the model')
 parser.add_argument('--embedding_dim', default=128, type=int, help='Number of dimensions of the dynamic embedding')
-parser.add_argument('--train_proportion', default=0.8, type=float, help='Fraction of interactions (from the beginning) that are used for training.The next 10% are used for validation and the next 10% for testing')
 parser.add_argument('-ws', '--wandb_sync', '--wandb_sync=1', action='store_true', help='Check if the run is going to be uploaded to WandB')
 parser.add_argument('--state_change', default=False, type=bool, help='True if training with state change of users along with interaction prediction. False otherwise. By default, set to True.')
-parser.add_argument('--full_train', default=False, action='store_true', help='Enables the full train mode training the model with all the dataset to calculate the embeddings in the final interaction.')
 parser.add_argument('--tqdmdis', action='store_true', help='Enable or disable TQDM progress bar.')
-parser.add_argument('--split', default=0, type=int, help='The split of the pipeline') 
+parser.add_argument('--train_split', required=True, type=float, help='Train/test split. Set the percentage for the training set.') 
+parser.add_argument('-t', '--tags', action='append', help='Tags for WandB')
 args = parser.parse_args()
 
 # Set the name of the data file 
 args.dataname = args.data.split('.')[0]
-tags = [socket.gethostname(),'JODIE_seq', args.dataname]
+
+if args.tags is not None:
+    tags = args.tags
+    tags.append(args.dataname)
+else:
+    tags = args.dataname
+
 if not args.wandb_sync:
     os.environ['WANDB_MODE'] = 'dryrun'
 
-if args.full_train:
-    tags.append('full_train')
-
 wandb.init(project="mondrian", config=args, tags=tags)
-
-output_fname = "results/interaction_prediction_%s.txt" % args.data
 
 # SET GPU
 if args.gpu == -1:
@@ -52,14 +52,15 @@ os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
  timestamp_list,
  feature_list, 
  head_labels, 
- tail_labels) = load_data(args)
+ tail_labels,
+ reduced_head_list) = load_data(args, tail_as_feature=True)
 
 num_users = len(user2id)
 num_actions = len(action2id) + 1 # If the previous action is none
 num_interactions = len(user_list_id)
 num_features = len(feature_list[0])
 y_true = action_list_id
-users_edited = [False] * num_users
+edited_users = [False] * num_users
 print("*** Network statistics:\n  %d users\n  %d action types\n  %d features\n  %d interactions\n ***\n\n" % (num_users, num_actions, num_features, num_interactions))
 
 # Calculate the weights assigned to each class to manage the imbalance
@@ -71,15 +72,8 @@ print("*** Network statistics:\n  %d users\n  %d action types\n  %d features\n  
 # y_true = torch.LongTensor(y_true)
 
 
-# SET TRAINING, VALIDATION AND TESTING SPLITS
-train_end_idx = validation_start_idx = int(num_interactions * args.train_proportion) 
-test_start_idx = int(num_interactions * (args.train_proportion + 0.1))
-test_end_idx = int(num_interactions * (args.train_proportion + 0.2))
-
-if args.full_train:
-    end_idx = num_interactions
-else:
-    end_idx = train_end_idx
+# SET TRAIN SPLIT
+train_end_idx  = int(num_interactions * args.train_split) 
 
 # INITIALIZE MODEL AND PARAMETERS
 model = Mondrian(args, num_users, num_actions, num_features).cuda()
@@ -99,8 +93,14 @@ initial_action_embedding = nn.Parameter(F.normalize(torch.rand(args.embedding_di
 model.initial_user_embedding = initial_user_embedding
 model.initial_action_embedding = initial_action_embedding
 
-user_embeddings = initial_user_embedding.repeat(num_users, 1) # initialize all users to the same embedding 
-action_embeddings = initial_action_embedding.repeat(num_actions, 1)
+
+user_embeddings = torch.empty(num_users, args.embedding_dim).cuda()
+nn.init.xavier_uniform_(user_embeddings)
+print(user_embeddings)
+
+action_embeddings = torch.empty(num_actions, args.embedding_dim).cuda()
+nn.init.xavier_uniform_(action_embeddings)
+
 user_embedding_static = Variable(torch.eye(num_users).cuda()) # one-hot vectors for static embeddings
 action_embedding_static = Variable(torch.eye(num_actions).cuda())
 
@@ -137,7 +137,7 @@ with trange(1, args.epochs+1, disable=args.tqdmdis) as progress_bar1:
 
         model.train()
 
-        with trange(end_idx, disable=args.tqdmdis) as progress_bar2:
+        with trange(train_end_idx, disable=args.tqdmdis) as progress_bar2:
             for j in progress_bar2:
                 progress_bar2.set_description('Processed %dth interactions' % j)
                 userid = user_list_id[j]
@@ -145,7 +145,7 @@ with trange(1, args.epochs+1, disable=args.tqdmdis) as progress_bar1:
                 feature = feature_list[j]
                 previous_actionid = user_previous_actionid_list[j]
                 
-                users_edited[userid] = True
+                edited_users[userid] = True
 
                 feature_tensor = torch.Tensor(feature).cuda().unsqueeze(0)
                 user_timediffs_tensor = torch.Tensor([user_timediference_list[j]]).cuda().unsqueeze(0)
@@ -202,7 +202,7 @@ with trange(1, args.epochs+1, disable=args.tqdmdis) as progress_bar1:
                    'total_loss_mean': np.mean(mean_loss)})
         
         print(5*'*' + ' END TRAIN -- Memory allocated: ' + str(torch.cuda.max_memory_allocated()) + 5*'*')
-        print("\nLast epoch took {} minutes".format((time.time()-epoch_start_time)/60))
+        # print("\nLast epoch took {} minutes".format((time.time()-epoch_start_time)/60))
         
         #END OF ONE EPOCH
         print("\nTotal loss in this epoch = %f\n" % (total_loss))
@@ -210,22 +210,12 @@ with trange(1, args.epochs+1, disable=args.tqdmdis) as progress_bar1:
         # UNTIL MEMORY MANAGEMENT
         user_embeddings_dystat = torch.cat([user_embeddings.cpu(), user_embedding_static.cpu()], dim=1)
         action_embeddings_dystat = torch.cat([action_embeddings.cpu(), action_embedding_static.cpu()], dim=1) 
-        
-        
-        if args.full_train:
-            prepare_data_folder(args)
-            args.model = 'mondrain_full_v0.1'
-            torch.save(user_embeddings_dystat, 'embeddings/%s/full_%s_embeddings_ep%s.pt' % (args.dataname, args.dataname, str(ep)))
-        
-        if not ep%5:
-            save_model(model, optimizer, args, ep, user_embeddings_dystat, action_embeddings_dystat, train_end_idx, user_embeddings_timeseries, action_embeddings_timeseries)
-            
 
-        user_embeddings = initial_user_embedding.repeat(num_users, 1)
-        action_embeddings = initial_action_embedding.repeat(num_actions, 1)
-        print(5*'*' + ' END EPOCH -- Memory allocated: ' + str(torch.cuda.max_memory_allocated()) + 5*'*')
+        # user_embeddings = initial_user_embedding.repeat(num_users, 1)
+        # action_embeddings = initial_action_embedding.repeat(num_actions, 1)
+        # print(5*'*' + ' END EPOCH -- Memory allocated: ' + str(torch.cuda.max_memory_allocated()) + 5*'*')
 
 # END OF ALL EPOCHS. SAVE FINAL MODEL DISK TO BE USED IN EVALUATION.
 print("\n\n*** Training complete. Saving final model. ***\n\n")
-save_model(model, optimizer, args, ep, user_embeddings_dystat, action_embeddings_dystat, train_end_idx, user_embeddings_timeseries, action_embeddings_timeseries)
+save_model(model, optimizer, args, ep, user_embeddings_dystat, action_embeddings_dystat, train_end_idx, edited_users, user_embeddings_timeseries, action_embeddings_timeseries)
 

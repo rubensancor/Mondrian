@@ -14,24 +14,23 @@ def check_user(user, checklist):
     else:
         return '0'
     
-def create_hashtag_tokens(hashtags, max_token_size):
-    if isinstance(hashtags, str) and not hashtags == '[]':
-        hashtags = hashtags.replace("'", '').replace('[', '').replace(']', '').split(',')
+def create_hashtag_tokens(hashtags):
+    try:
+        if isinstance(hashtags, str):
+            hashtags = hashtags.strip("'[]").split(',')
         tokens = tokenizer(hashtags, is_split_into_words=True)['input_ids']
+    except:
+        tokens = [0]
         
-        if len(tokens) > max_token_size:
-            max_token_size = len(tokens)
-            
-    else:
-        tokens = [0] * max_token_size
-        
-    return tokens, max_token_size
+    return tokens
 
 # Converts tweets from the dataset in interactions with this structure
 #(head, tail, interaction, timestamp, label_1, label_2, hashtag_tokens_separated_by_comma)
 parser = argparse.ArgumentParser()
 parser.add_argument('--folder', required=True, help='Folder path')
 parser.add_argument('--users', action='store_true', help='If they are user interactions.')
+parser.add_argument('--disable_twitter', action='store_true', help='Disable tweets without interaction.')
+parser.add_argument('--disable_rts', action='store_true', help='Disable rts.')
 args = parser.parse_args()
 
 tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
@@ -102,8 +101,7 @@ for f in sorted(os.listdir(args.folder)):
                         interaction = 'reply-url'
                     
                     
-                    tokens, max_token_size = create_hashtag_tokens(row['hashtags'], max_token_size)
-                    
+                    tokens = create_hashtag_tokens(row['hashtags'])
                     
                     dict_inter[t] = {
                         'head': head,
@@ -133,6 +131,8 @@ for f in sorted(os.listdir(args.folder)):
                             interaction = 'rt-hashtag-url'
                     elif isinstance(row['urls'], str) and not row['urls'] == '[]':
                         interaction = 'rt-url'
+                        
+                    tokens = create_hashtag_tokens(row['hashtags'])
                     
                     dict_inter[t] = {
                         'head': head,
@@ -140,7 +140,8 @@ for f in sorted(os.listdir(args.folder)):
                         'interaction': interaction,
                         'timestamp': timestamp,
                         'label_1': label_1,
-                        'label_2': label_2
+                        'label_2': label_2,
+                        'features': tokens
                     }
                     t += 1
 
@@ -162,6 +163,8 @@ for f in sorted(os.listdir(args.folder)):
                             interaction = 'mention-hashtag-url'
                     elif isinstance(row['urls'], str) and not row['urls'] == '[]':
                         interaction = 'mention-url'
+                        
+                    tokens = create_hashtag_tokens(row['hashtags'])
 
                     dict_inter[t] = {
                         'head': head,
@@ -169,59 +172,25 @@ for f in sorted(os.listdir(args.folder)):
                         'interaction': interaction,
                         'timestamp': timestamp,
                         'label_1': label_1,
-                        'label_2': label_2
+                        'label_2': label_2,
+                        'features': tokens
                     }
                     t += 1
 
             else:
-                
-                dict_inter[t] = {
-                        'head': head,
-                        'tail': 'Twitter',
-                        'interaction': 'tweet',
-                        'timestamp': timestamp,
-                        'label_1': label_1,
-                        'label_2': 3
-                    }
-                t += 1
-
-            # if isinstance(row['hashtags'], str) and not row['hashtags'] == '[]':
-            #     hashtags = ast.literal_eval(row['hashtags'])
-            #     for hashtag in hashtags:
-            #         tail = hashtag.lower()
-            #         if tail == '':
-            #             continue
-
-            #         label_2 = '2'
-                        
-            #         dict_inter[t] = {
-            #             'head': head,
-            #             'tail': tail,
-            #             'interaction': 'hashtag',
-            #             'timestamp': timestamp,
-            #             'label_1': label_1,
-            #             'label_2': label_2
-            #         }
-            #         t += 1
-
-            # if isinstance(row['urls'], str) and not row['urls'] == '[]':
-            #     urls = ast.literal_eval(row['urls'])
-            #     for url in urls:
-            #         tail = url
-            #         if tail == '':
-            #             continue
-
-            #         label_2 = '3'
-                        
-            #         dict_inter[t] = {
-            #             'head': head,
-            #             'tail': tail,
-            #             'interaction': 'url',
-            #             'timestamp': timestamp,
-            #             'label_1': label_1,
-            #             'label_2': label_2
-            #         }
-            #         t += 1
+                if not args.disable_twitter:
+                    tokens = create_hashtag_tokens(row['hashtags'])
+                    
+                    dict_inter[t] = {
+                            'head': head,
+                            'tail': 'Twitter',
+                            'interaction': 'tweet',
+                            'timestamp': timestamp,
+                            'label_1': label_1,
+                            'label_2': 3,
+                            'features': tokens
+                        }
+                    t += 1
 
     elif file_type == 'pickle':
         with open(args.folder + f, 'rb') as pickleFile:
@@ -256,14 +225,22 @@ for f in sorted(os.listdir(args.folder)):
                         interaction = 'reply-hashtag-url'
                 elif len(tweet['entities']['urls']) > 0:
                     interaction = 'reply-url'
-
+                
+                
+                hashtags = []
+                for hashtag in tweet['entities']['hashtags']:
+                    hashtags.append(hashtag['text'])
+                
+                tokens = create_hashtag_tokens(hashtags)
+                
                 dict_inter[t] = {
                     'head': head,
                     'tail': tail,
                     'interaction': interaction,
                     'timestamp': timestamp,
                     'label_1': label_1,
-                    'label_2': label_2
+                    'label_2': label_2,
+                    'features': tokens
                 }
                 t += 1
 
@@ -280,6 +257,12 @@ for f in sorted(os.listdir(args.folder)):
                             interaction = 'mention-hashtag-url'
                     elif len(tweet['entities']['urls']) > 0:
                         interaction = 'mention-url'
+                       
+                    hashtags = [] 
+                    for hashtag in tweet['entities']['hashtags']:
+                        hashtags.append(hashtag['text'])
+                
+                    tokens = create_hashtag_tokens(hashtags)
 
                     dict_inter[t] = {
                         'head': head,
@@ -287,61 +270,93 @@ for f in sorted(os.listdir(args.folder)):
                         'interaction': interaction,
                         'timestamp': timestamp,
                         'label_1': label_1,
-                        'label_2': label_2
+                        'label_2': label_2,
+                        'features': tokens
                     }
                     t += 1
-            
-            else:
-                dict_inter[t] = {
-                        'head': head,
-                        'tail': 'Twitter',
-                        'interaction': 'tweet',
-                        'timestamp': timestamp,
-                        'label_1': label_1,
-                        'label_2': 3
-                    }
-                t += 1
-
-            # if len(tweet['entities']['hashtags']) > 0:
-            #     for hashtag in tweet['entities']['hashtags']:
-            #         tail = hashtag['text'].lower()
-
-            #         label_2 = '2'
-
                     
-                        
-            #         dict_inter[t] = {
-            #             'head': head,
-            #             'tail': tail,
-            #             'interaction': 'hashtag',
-            #             'timestamp': timestamp,
-            #             'label_1': label_1,
-            #             'label_2': label_2
-            #         }
-            #         t += 1
+            elif tweet['is_quote_status']:
+                try:
+                    tail = tweet['quoted_status']['user']['id']
+                    if tail == 0 or tail == None:
+                        continue
+                    
+                    label_2 = check_user(tail, malicious_users)
 
-            # if len(tweet['entities']['urls']) > 0:
-            #     for hashtag in tweet['entities']['urls']:
-            #         tail = hashtag['url']
-
-            #         label_2 = '3'
+                    interaction = 'rt'
+                    if len(tweet['entities']['hashtags']) != 0 or len(tweet['quoted_status']['entities']['hashtags']) != 0:
+                        interaction = 'rt-hashtag'
+                        if len(tweet['entities']['urls']) != 0 or len(tweet['quoted_status']['entities']['urls']) != 0:
+                            interaction = 'rt-hashtag-url'
+                    elif len(tweet['entities']['urls']) != 0 or len(tweet['quoted_status']['entities']['urls']) != 0:
+                        interaction = 'rt-url'
                         
-            #         dict_inter[t] = {
-            #             'head': head,
-            #             'tail': tail,
-            #             'interaction': 'url',
-            #             'timestamp': timestamp,
-            #             'label_1': label_1,
-            #             'label_2': label_2
-            #         }
-            #         t += 1
+                    hashtags = [] 
+                    for hashtag in tweet['entities']['hashtags']:
+                        hashtags.append(hashtag['text'])
+                    for hashtag in tweet['quoted_status']['entities']['hashtags']:
+                        hashtags.append(hashtag['text'])
+                    
+                    # for rt in retweets:
+                    #     tail = rt.replace("'",'')
+                    #     if tail == '0' or tail == '':
+                    #         continue
 
     
+                    tokens = create_hashtag_tokens(hashtags)
+                    
+                    dict_inter[t] = {
+                        'head': head,
+                        'tail': tail,
+                        'interaction': interaction,
+                        'timestamp': timestamp,
+                        'label_1': label_1,
+                        'label_2': label_2,
+                        'features': tokens
+                    }
+                    t += 1
+                except:
+                    continue
+            else:
+                if not args.disable_twitter:
+                    hashtags = []
+                    for hashtag in tweet['entities']['hashtags']:
+                        hashtags.append(hashtag['text'])
+                    
+                    tokens = create_hashtag_tokens(hashtags)
+                    
+                    dict_inter[t] = {
+                            'head': head,
+                            'tail': 'Twitter',
+                            'interaction': 'tweet',
+                            'timestamp': timestamp,
+                            'label_1': label_1,
+                            'label_2': 3,
+                            'features': tokens
+                        }
+                    t += 1
+
+
+for i in dict_inter:
+    if len(dict_inter[i]['features']) > max_token_size:
+        max_token_size = len(dict_inter[i]['features'])
+
+for i in dict_inter:
+    if len(dict_inter[i]['features']) < max_token_size:
+        padding = max_token_size - len(dict_inter[i]['features'])
+        tmp = [0] * padding
+        dict_inter[i]['features'].extend(tmp)
+
+
 df = pd.DataFrame.from_dict(dict_inter, orient='index')
 df = df.sort_values('timestamp')
+
+write_name = 'interactions.csv'
+if args.disable_twitter:
+    write_name = 'NO_TWITTER_' + write_name
 if args.users:
-    df.to_csv(args.folder.split('/')[-2] + '_users_interactions.csv', index=False)
+    df.to_csv(args.folder.split('/')[-2] + '_users_' + write_name, index=False)
 else:
-    df.to_csv(args.folder.split('/')[-2] + '_interactions.csv', index=False)
+    df.to_csv(args.folder.split('/')[-2] + write_name, index=False)
 
 

@@ -11,15 +11,25 @@ Paper: Predicting Dynamic Embedding Trajectory in Temporal Interaction Networks.
 '''
 
 import argparse
-
+import wandb
+import socket
 from utilities import *
 from data_loader import *
 from models import *
+from collections import Counter
+from statistics import mean
+from sklearn.svm import LinearSVC
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.neural_network import MLPClassifier
+from sklearn.model_selection import StratifiedKFold
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.dummy import DummyClassifier
+from sklearn.metrics import f1_score
 
 # FIX THE RANDOM SEED FOR REPRODUCIBILITY
 SEED = 1234
-torch.manual_seed(0)
-np.random.seed(0)
+torch.manual_seed(SEED)
+np.random.seed(SEED)
 torch.backends.cudnn.benchmark = False # reduces the performance
 
 # INITIALIZE PARAMETERS
@@ -29,32 +39,29 @@ parser.add_argument('--model', default="mondrain_v0.1", help='Model name to save
 parser.add_argument('--gpu', default=-1, type=int, help='ID of the gpu to run on. If set to -1 (default), the GPU with most free memory will be chosen.')
 parser.add_argument('--epoch', default=20, type=int, help='Epoch id to load')
 parser.add_argument('--embedding_dim', default=128, type=int, help='Number of dimensions')
-parser.add_argument('--train_proportion', default=0.8, type=float, help='Proportion of training interactions')
-parser.add_argument('--state_change', default=False, type=bool, help='True if training with state change of users in addition to the next interaction prediction. False otherwise. By default, set to True. MUST BE THE SAME AS THE ONE USED IN TRAINING.') 
+parser.add_argument('-ws', '--wandb_sync', '--wandb_sync=1', action='store_true', help='Check if the run is going to be uploaded to WandB')
+parser.add_argument('--train_split', required=True, type=float, help='Train split. Set the percentage for the training set.')
+parser.add_argument('--test_size', required=True, type=float, help='Train/test split. Set the percentage for the training set.')
+parser.add_argument('-t', '--tags', action='append', help='Tags for WandB')
 args = parser.parse_args()
 # Set the name of the data file 
 args.dataname = args.data.split('.')[0]
-
-# args.datapath = "data/%s.csv" % args.network
-if args.train_proportion > 0.8:
-    sys.exit('Training sequence proportion cannot be greater than 0.8.')
     
 # SET GPU
 args.gpu = select_free_gpu()
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
 
-# CHECK IF THE OUTPUT OF THE EPOCH IS ALREADY PROCESSED. IF SO, MOVE ON.
-output_fname = "results/interaction_prediction_%s.txt" % args.dataname
-if os.path.exists(output_fname):
-    f = open(output_fname, "r")
-    search_string = 'Test performance of epoch %d' % args.epoch
-    for l in f:
-        l = l.strip()
-        if search_string in l:
-            print("Output file already has results of epoch %d" % args.epoch)
-            sys.exit(0)
-    f.close()
+if args.tags is not None:
+    tags = args.tags
+    tags.append(args.dataname)
+else:
+    tags = [args.dataname]
+    
+if not args.wandb_sync:
+    os.environ['WANDB_MODE'] = 'dryrun'
+
+wandb.init(project="mondrian", config=args, tags=tags)
 
 # LOAD NETWORK
 (user2id, user_list_id, user_timediference_list, user_previous_actionid_list,
@@ -62,7 +69,9 @@ if os.path.exists(output_fname):
  timestamp_list,
  feature_list, 
  head_labels, 
- tail_labels) = load_data(args)
+ tail_labels,
+ reduced_head_list) = load_data(args, tail_as_feature=True)
+
 num_users = len(user2id)
 num_actions = len(action2id) + 1 # If the previous action is none
 num_interactions = len(user_list_id)
@@ -70,20 +79,9 @@ num_features = len(feature_list[0])
 y_true = action_list_id
 print("*** Network statistics:\n  %d users\n  %d action types\n  %d features\n  %d interactions\n ***\n\n" % (num_users, num_actions, num_features, num_interactions))
 
-# SET TRAINING, VALIDATION AND TESTING SPLITS
-train_end_idx = validation_start_idx = int(num_interactions * args.train_proportion) 
-test_start_idx = int(num_interactions * (args.train_proportion + 0.1))
-test_end_idx = int(num_interactions * (args.train_proportion + 0.2))
-
-# SET BATCHING TIMESPAN
-'''
-Timespan indicates how frequently the model is run and updated. 
-All interactions in one timespan are processed simultaneously. 
-Longer timespans mean more interactions are processed and the training time is reduced, however it requires more GPU memory.
-At the end of each timespan, the model is updated as well. So, longer timespan means less frequent model updates. 
-'''
-# timespan = timestamp_sequence[-1] - timestamp_sequence[0]
-# tbatch_timespan = timespan / 500 
+# SET TRAINING AND TESTING SPLITS
+train_end_idx = int(num_interactions * args.train_split) 
+test_end_idx = train_end_idx + int(num_interactions * args.test_size)
 
 # INITIALIZE MODEL PARAMETERS
 model = Mondrian(args, num_users, num_actions, num_features).cuda()
@@ -95,7 +93,7 @@ learning_rate = 1e-3
 optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-5)
 
 # LOAD THE MODEL
-model, optimizer, user_embeddings_dystat, action_embeddings_dystat, user_embeddings_timeseries, action_embeddings_timeseries, train_end_idx_training = load_model(model, optimizer, args, args.epoch)
+model, optimizer, user_embeddings_dystat, action_embeddings_dystat, user_embeddings_timeseries, action_embeddings_timeseries, train_end_idx_training, edited_users = load_model(model, optimizer, args, args.epoch)
 if train_end_idx != train_end_idx_training:
     sys.exit('Training proportion during training and testing are different. Aborting.')
 
@@ -104,23 +102,33 @@ set_embeddings_training_end(user_embeddings_dystat, action_embeddings_dystat, us
 
 # LOAD THE EMBEDDINGS: DYNAMIC AND STATIC
 action_embeddings = action_embeddings_dystat[:, :args.embedding_dim].detach()
-# action_embeddings = action_embeddings.clone()
-print(5*'*' + ' -- Memory allocated: ' + str(torch.cuda.max_memory_allocated()) + 5*'*')
-action_embeddings_static = action_embeddings_dystat[:, args.embedding_dim:].detach()
-# action_embeddings_static = action_embeddings_static.clone()
-print(5*'*' + ' -- Memory allocated: ' + str(torch.cuda.max_memory_allocated()) + 5*'*')
+action_embeddings = action_embeddings.clone()
 
+action_embeddings_static = action_embeddings_dystat[:, args.embedding_dim:].detach()
+action_embeddings_static = action_embeddings_static.clone()
 
 user_embeddings = user_embeddings_dystat[:, :args.embedding_dim].detach()
-# user_embeddings = user_embeddings.clone()
-print(5*'*' + ' -- Memory allocated: ' + str(torch.cuda.max_memory_allocated()) + 5*'*')
+user_embeddings = user_embeddings.clone()
+
 user_embeddings_static = user_embeddings_dystat[:, args.embedding_dim:].detach()
-# user_embeddings_static = user_embeddings_static.clone()
-print(5*'*' + ' -- Memory allocated: ' + str(torch.cuda.max_memory_allocated()) + 5*'*')
+user_embeddings_static = user_embeddings_static.clone()
+
+# Draw embeddings for visualization
+prepare_data_folder(args, 'projector')
+draw_embeddings(args, user_embeddings, reduced_head_list, 'projector', True)
 
 # PERFORMANCE METRICS
-validation_ranks = []
 test_ranks = []
+svc_f1 = []
+svc_acc = []
+knn_acc = []
+knn_f1 = []
+mlp_acc = []
+mlp_f1 = []
+rf_acc = []
+rf_f1 = []
+dummy_acc = []
+dummy_f1 = []
 
 ''' 
 Here we use the trained model to make predictions for the validation and testing interactions.
@@ -132,7 +140,8 @@ After this prediction, the errors in the prediction are used to calculate the lo
 This simulates the real-time feedback about the predictions that the model gets when deployed in-the-wild. 
 Please note that since each interaction in validation and test is only seen once during the forward pass, there is no data leakage. 
 '''
-tbatch_start_time = None
+
+
 loss = 0
 # FORWARD PASS
 print("*** Making interaction predictions by forward pass (no t-batching) ***")
@@ -146,9 +155,6 @@ with trange(train_end_idx, test_end_idx) as progress_bar:
         feature = feature_list[j]
         user_timediff = user_timediference_list[j]
         action_timediff = action_timediference_list[j]
-        # timestamp = timestamp_sequence[j]
-        # if not tbatch_start_time:
-        #     tbatch_start_time = timestamp
         actionid_previous = user_previous_actionid_list[j]
 
         # LOAD USER AND action EMBEDDING
@@ -179,10 +185,7 @@ with trange(train_end_idx, test_end_idx) as progress_bar:
         euclidean_distances_smaller = (euclidean_distances < true_action_distance).data.cpu().numpy()
         true_action_rank = np.sum(euclidean_distances_smaller) + 1
 
-        if j < test_start_idx:
-            validation_ranks.append(true_action_rank)
-        else:
-            test_ranks.append(true_action_rank)
+        test_ranks.append(true_action_rank)
 
         # UPDATE USER AND action EMBEDDING
         user_embedding_output = model.forward(user_embedding_input, action_embedding_input, timediffs=user_timediffs_tensor, features=feature_tensor, select='user_update') 
@@ -197,10 +200,6 @@ with trange(train_end_idx, test_end_idx) as progress_bar:
         # CALCULATE LOSS TO MAINTAIN TEMPORAL SMOOTHNESS
         loss += MSELoss(action_embedding_output, action_embedding_input.detach())
         loss += MSELoss(user_embedding_output, user_embedding_input.detach())
-
-        # CALCULATE STATE CHANGE LOSS
-        if args.state_change:
-            loss += calculate_state_prediction_loss(model, [j], user_embeddings_timeseries, y_true, crossEntropyLoss) 
 
         # UPDATE THE MODEL IN REAL-TIME USING ERRORS MADE IN THE PAST PREDICTION
         # if timestamp - tbatch_start_time > tbatch_timespan:
@@ -217,35 +216,118 @@ with trange(train_end_idx, test_end_idx) as progress_bar:
         user_embeddings_timeseries.detach_()
             
 prepare_data_folder(args)
-torch.save(user_embeddings, 'embeddings/%s/predicted_%s_embeddings.pt' % (args.dataname, args.dataname))
+torch.save(user_embeddings, 'embeddings/%s/predicted_%s_embeddings_train%s_test%s.pt' % (args.dataname, args.dataname, str(args.train_split), str(args.test_size)))
+draw_embeddings(args, user_embeddings, reduced_head_list, 'projector')
             
 # CALCULATE THE PERFORMANCE METRICS
-performance_dict = dict()
-ranks = validation_ranks
-mrr = np.mean([1.0 / r for r in ranks])
-rec10 = sum(np.array(ranks) <= 10)*1.0 / len(ranks)
-performance_dict['validation'] = [mrr, rec10]
-
-ranks = test_ranks
-mrr = np.mean([1.0 / r for r in ranks])
-rec10 = sum(np.array(ranks) <= 10)*1.0 / len(ranks)
-performance_dict['test'] = [mrr, rec10]
+# performance_dict = dict()
+# ranks = validation_ranks
+# mrr = np.mean([1.0 / r for r in ranks])
+# rec10 = sum(np.array(ranks) <= 10)*1.0 / len(ranks)
+# performance_dict['validation'] = [mrr, rec10]
+if args.test_size > 0:
+    mrr = np.mean([1.0 / r for r in test_ranks])
+    rec3 = sum(np.array(test_ranks) <= 3)*1.0 / len(test_ranks)
 
 # PRINT AND SAVE THE PERFORMANCE METRICS
-fw = open(output_fname, "a")
-metrics = ['Mean Reciprocal Rank', 'Recall@10']
+# fw = open(output_fname, "a")
+# metrics = ['Mean Reciprocal Rank', 'Recall@10']
 
-print('\n\n*** Validation performance of epoch %d ***' % args.epoch)
-fw.write('\n\n*** Validation performance of epoch %d ***\n' % args.epoch)
-for i in range(len(metrics)):
-    print(metrics[i] + ': ' + str(performance_dict['validation'][i]))
-    fw.write("Validation: " + metrics[i] + ': ' + str(performance_dict['validation'][i]) + "\n")
+# print('\n\n*** Validation performance of epoch %d ***' % args.epoch)
+# fw.write('\n\n*** Validation performance of epoch %d ***\n' % args.epoch)
+# for i in range(len(metrics)):
+#     print(metrics[i] + ': ' + str(performance_dict['validation'][i]))
+#     fw.write("Validation: " + metrics[i] + ': ' + str(performance_dict['validation'][i]) + "\n")
     
-print('\n\n*** Test performance of epoch %d ***' % args.epoch)
-fw.write('\n\n*** Test performance of epoch %d ***\n' % args.epoch)
-for i in range(len(metrics)):
-    print(metrics[i] + ': ' + str(performance_dict['test'][i]))
-    fw.write("Test: " + metrics[i] + ': ' + str(performance_dict['test'][i]) + "\n")
+# print('\n\n*** Test performance of epoch %d ***' % args.epoch)
+# fw.write('\n\n*** Test performance of epoch %d ***\n' % args.epoch)
+# for i in range(len(metrics)):
+#     print(metrics[i] + ': ' + str(performance_dict['test'][i]))
+#     fw.write("Test: " + metrics[i] + ': ' + str(performance_dict['test'][i]) + "\n")
 
-fw.flush()
-fw.close()
+# fw.flush()
+# fw.close()
+
+X = []
+y = []
+
+for i in range(len(user_embeddings)):
+    #if edited_users[i]:
+    #    X.append(user_embeddings[i].tolist())
+    #    y.append(head_labels[user_list_id.index(i)])
+    X.append(user_embeddings[i].tolist())
+    y.append(head_labels[user_list_id.index(i)])
+
+print(5 * '*' + ' Data distribution ' + 5 * '*')
+print('Labels: ')
+print(Counter(y))
+
+skf = StratifiedKFold(n_splits=5)
+skf.get_n_splits(X, y)
+
+
+
+for train_index, test_index in skf.split(X, y):
+    # print("TRAIN:", train_index, "TEST:", test_index)
+    X_train, X_test = np.array(X)[train_index.astype(int)], np.array(X)[test_index.astype(int)]
+    y_train, y_test = np.array(y)[train_index.astype(int)], np.array(y)[test_index.astype(int)]
+ 
+    # Linear SVC
+    clf = LinearSVC(class_weight='balanced')
+    clf.fit(X, y)
+    predictions = clf.predict(X_test)
+    svc_acc.append(clf.score(X_test, y_test))
+    svc_f1.append(f1_score(y_test, predictions, average='macro'))
+    
+    # KNN
+    clf = KNeighborsClassifier(n_neighbors=5)
+    clf.fit(X, y)
+    predictions = clf.predict(X_test)
+    knn_acc.append(clf.score(X_test, y_test))
+    knn_f1.append(f1_score(y_test, predictions, average='macro'))
+    
+    # MLP
+    clf = MLPClassifier(random_state=1, max_iter=300)
+    clf.fit(X, y)
+    predictions = clf.predict(X_test)
+    mlp_acc.append(clf.score(X_test, y_test))
+    mlp_f1.append(f1_score(y_test, predictions, average='macro'))
+    
+    # RF    
+    clf = RandomForestClassifier()
+    clf.fit(X, y)
+    predictions = clf.predict(X_test)
+    rf_acc.append(clf.score(X_test, y_test))
+    rf_f1.append(f1_score(y_test, predictions, average='macro'))
+    
+    # DUMMY
+    clf = DummyClassifier(strategy='stratified', random_state=1234)
+    clf.fit(X, y)
+    predictions = clf.predict(X_test)
+    dummy_acc.append(clf.score(X_test, y_test))
+    dummy_f1.append(f1_score(y_test, predictions, average='macro'))
+
+if args.test_size > 0:
+    wandb.log({'SVC_ACC': mean(svc_acc),
+            'SVC_F1': mean(svc_f1),
+           'KNN_ACC': mean(knn_acc),
+           'KNN_F1': mean(knn_f1),
+           'MLP_ACC': mean(mlp_acc),
+           'MLP_F1': mean(mlp_f1),
+           'RF_ACC': mean(rf_acc),
+           'RF_F1': mean(rf_f1),
+           'DUMMY_ACC': mean(dummy_acc),
+           'DUMMY_F1': mean(dummy_f1),
+           'mrr' : mrr,
+           'rec5': rec3})
+else:
+    wandb.log({'SVC_ACC': mean(svc_acc),
+            'SVC_F1': mean(svc_f1),
+           'KNN_ACC': mean(knn_acc),
+           'KNN_F1': mean(knn_f1),
+           'MLP_ACC': mean(mlp_acc),
+           'MLP_F1': mean(mlp_f1),
+           'RF_ACC': mean(rf_acc),
+           'RF_F1': mean(rf_f1),
+           'DUMMY_ACC': mean(dummy_acc),
+           'DUMMY_F1': mean(dummy_f1),})

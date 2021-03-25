@@ -37,11 +37,17 @@ parser.add_argument('--full_train', default=False, action='store_true', help='En
 parser.add_argument('--tqdmdis', action='store_true', help='Enable or disable TQDM progress bar.')
 parser.add_argument('--disable_train', action='store_true', help='Enable or disable train phase.')
 parser.add_argument('--split', default=1, type=int, help='The split of the pipeline') 
+parser.add_argument('--tags', help='Tags for WandB')
+
 args = parser.parse_args()
 
 # Set the name of the data file 
 args.dataname = args.data.split('.')[0].split('/')[-1]
-tags = [socket.gethostname(),'FULL_PIPELINE', args.dataname]
+if args.tags is not None:
+    tags = [socket.gethostname(), args.tags, args.dataname]
+else:
+    tags = [socket.gethostname(), args.dataname]
+    
 if not args.wandb_sync:
     os.environ['WANDB_MODE'] = 'dryrun'
 
@@ -64,7 +70,7 @@ os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
  timestamp_list,
  feature_list, 
  head_labels, 
- tail_labels) = load_data(args)
+ tail_labels) = load_data(args, tail_as_feature=True)
 
 num_users = len(user2id)
 num_actions = len(action2id) + 1 # If the previous action is none
@@ -80,7 +86,7 @@ print("*** Network statistics:\n  %d users\n  %d action types\n  %d features\n  
 # test_end_idx = int(num_interactions * (args.train_proportion + 0.2))
 
 
-train_end_idx = int(num_interactions * ((0.15) * args.split))
+train_end_idx = int(num_interactions * ((0.25) * args.split))
 test_start_idx = train_end_idx + 1
 test_end_idx = num_interactions
 
@@ -419,7 +425,7 @@ if not args.full_train:
     rf_acc = clf.score(x_test, y_test)
     rf_f1 = f1_score(y_test, predictions, average='macro')
     
-    clf = DummyClassifier(strategy='uniform', random_state=SEED)
+    clf = DummyClassifier(strategy='constant', random_state=SEED, constant=0)
     clf.fit(X, y)
     predictions = clf.predict(x_test)
     dummy_acc = clf.score(x_test, y_test)

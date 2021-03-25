@@ -1,4 +1,5 @@
 import os
+from sys import exec_prefix
 import torch
 import gpustat
 import numpy as np
@@ -16,8 +17,11 @@ def select_free_gpu():
         mem.append(gpu_stats.jsonify()["gpus"][i]["memory.used"])
     return str(gpus[np.argmin(mem)])
 
-def prepare_data_folder(args, path=PATH):
-    directory = os.path.join(path, 'embeddings/%s' % args.dataname)
+def prepare_data_folder(args, extra_folder=None ,path=PATH):
+    if extra_folder is None:
+        directory = os.path.join(path, 'embeddings/%s' % args.dataname)
+    else:
+        directory = os.path.join(path, 'embeddings/%s/%s' % (args.dataname, extra_folder))
     if not os.path.exists(directory):
         os.makedirs(directory)
 
@@ -72,7 +76,36 @@ def draw_final_embeddings(name, user_embeddings_dystat, user_list_id):
     x_df = pd.DataFrame(x_np)
     x_df.to_csv('embeddings_'+name+'.tsv', sep='\t', header=False, index=False, mode='a')
     
-def draw_embeddings(args, f, state, path=PATH):
+def draw_embeddings(args, embeddings, labels, extra_path=None, train_embeddings=False, path=PATH):
+    if extra_path is None:
+        label_file = os.path.join(path, 'embeddings/%s/labels_' % (args.dataname))
+        embedding_file = os.path.join(path, 'embeddings/%s/embeddings_' % (args.dataname))
+    else:
+        label_file = os.path.join(path, 'embeddings/%s/%s/labels_' % (args.dataname, extra_path))
+        embedding_file = os.path.join(path, 'embeddings/%s/%s/embeddings_' % (args.dataname, extra_path))
+        
+    if train_embeddings:
+        label_file = label_file + ('train%s.tsv' % (args.train_split))
+        embedding_file = embedding_file + ('train%s.tsv' % (args.train_split))
+    else:
+        label_file = label_file + ('train%s_test%s.tsv' % (args.train_split, args.test_size))
+        embedding_file = embedding_file + ('train%s_test%s.tsv' % (args.train_split, args.test_size))
+        
+    d = {'label':labels}
+
+    # WRITE LABELS TO FILE
+    if not os.path.isfile(label_file):
+        with open(label_file, 'w') as f:
+            f.write('label\n')
+    labels_df = pd.DataFrame(d)
+    labels_df.to_csv(label_file, sep='\t', header=False, index=False, mode='a')
+    
+    # WRITE EMBEDDINGS TO FILE
+    x_np = embeddings.cpu().detach().numpy()
+    x_df = pd.DataFrame(x_np)
+    x_df.to_csv(embedding_file, sep='\t', header=False, index=False, mode='a')
+
+def draw_embeddings_old(args, f, state, path=PATH):
     embedding_path = os.path.join(path, args.folder, f)
     embeddings = torch.load(embedding_path)        
     embedding_tensor = None
@@ -89,9 +122,6 @@ def draw_embeddings(args, f, state, path=PATH):
     
     # WRITE LABELS TO FILE
     filename = os.path.join(path, 'embeddings/%s/labels_%s.tsv' % (args.dataname, args.dataname))
-    if not os.path.isfile(filename):
-        with open(filename, 'w') as f:
-            f.write('label\n')
     labels_df = pd.DataFrame(d)
     labels_df.to_csv(filename, sep='\t', header=False, index=False, mode='a')
     
