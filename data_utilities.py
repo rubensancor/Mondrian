@@ -30,7 +30,6 @@ def dataset_reducer(path, N):
 def dataset_stats(path):
     df = pd.read_csv(path)
     
-
     df_malicious = df[df.label_1 == 1]
     print('--- Malicious statistics ---')
     print('Number of users -----> %i' % len(set(df_malicious['head'].tolist())))
@@ -43,6 +42,9 @@ def dataset_stats(path):
     print('Mean tweets per user -----> %f ' % df_legit.groupby(['head']).size().mean())
     print(df_legit.groupby(['interaction']).size() / len(set(df_legit['head'].tolist())))
     
+def dataset_size(path):
+    # TODO: Tiempo que comprende el dataset
+    return
 
     
     
@@ -58,4 +60,5 @@ if __name__ == "__main__":
     # print('***** SPAIN NO TWITTER *****')
     # dataset_stats('spain_users_NO_TWITTER_interactions.csv')
     
-    dataset_stats('spain_users_interactions.csv')
+    # dataset_stats('spain_users_NO_RT_NO_TWITTER_interactions.csv')
+    dataset_stats('iran-1_users_NO_TWITTER_interactions.csv')

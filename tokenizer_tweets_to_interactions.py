@@ -6,6 +6,8 @@ import argparse
 import datetime
 from tqdm import tqdm
 import pandas as pd
+import urlexpander
+import tldextract
 from transformers import BertTokenizer
 
 def check_user(user, checklist):
@@ -24,13 +26,25 @@ def create_hashtag_tokens(hashtags):
         
     return tokens
 
+def divide_url(urls):
+    domains = []
+    suffixes = []
+    for url in urls:
+        try:
+            url = urlexpander.expand(url)
+        except:
+            continue
+        domains.append(tldextract.extract(url).domain)
+        suffixes.append(tldextract.extract(url).suffix)
+    return domains, suffixes
+
 # Converts tweets from the dataset in interactions with this structure
 #(head, tail, interaction, timestamp, label_1, label_2, hashtag_tokens_separated_by_comma)
 parser = argparse.ArgumentParser()
 parser.add_argument('--folder', required=True, help='Folder path')
 parser.add_argument('--users', action='store_true', help='If they are user interactions.')
 parser.add_argument('--disable_twitter', action='store_true', help='Disable tweets without interaction.')
-parser.add_argument('--disable_rts', action='store_true', help='Disable rts.')
+parser.add_argument('--disable_rt', action='store_true', help='Disable rts.')
 args = parser.parse_args()
 
 tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
@@ -100,6 +114,12 @@ for f in sorted(os.listdir(args.folder)):
                     elif isinstance(row['urls'], str) and not row['urls'] == '[]':
                         interaction = 'reply-url'
                     
+                    domains, suffixes = None, None
+                    if 'url' in interaction:
+                        urls = ast.literal_eval(row['urls'])
+                        domains, suffixes = divide_url(urls)
+                    print(domains)
+                    
                     
                     tokens = create_hashtag_tokens(row['hashtags'])
                     
@@ -110,11 +130,16 @@ for f in sorted(os.listdir(args.folder)):
                         'timestamp': timestamp,
                         'label_1': label_1,
                         'label_2': label_2,
-                        'features': tokens
+                        'features': tokens,
+                        'domains': domains,
+                        'suffixed': suffixes
                     }
                     t += 1
 
             elif isinstance(row['retweet_userid'], str):
+                if args.disable_rt:
+                    continue
+                
                 retweets = row['retweet_userid'].strip('][').split(', ')
 
                 for rt in retweets:
@@ -132,6 +157,11 @@ for f in sorted(os.listdir(args.folder)):
                     elif isinstance(row['urls'], str) and not row['urls'] == '[]':
                         interaction = 'rt-url'
                         
+                    domains, suffixes = None, None
+                    if 'url' in interaction:
+                        urls = ast.literal_eval(row['urls'])
+                        domains, suffixes = divide_url(urls)
+                        
                     tokens = create_hashtag_tokens(row['hashtags'])
                     
                     dict_inter[t] = {
@@ -141,7 +171,9 @@ for f in sorted(os.listdir(args.folder)):
                         'timestamp': timestamp,
                         'label_1': label_1,
                         'label_2': label_2,
-                        'features': tokens
+                        'features': tokens,
+                        'domains': domains,
+                        'suffixed': suffixes
                     }
                     t += 1
 
@@ -164,6 +196,11 @@ for f in sorted(os.listdir(args.folder)):
                     elif isinstance(row['urls'], str) and not row['urls'] == '[]':
                         interaction = 'mention-url'
                         
+                    domains, suffixes = None, None
+                    if 'url' in interaction:
+                        urls = ast.literal_eval(row['urls'])
+                        domains, suffixes = divide_url(urls)
+                        
                     tokens = create_hashtag_tokens(row['hashtags'])
 
                     dict_inter[t] = {
@@ -173,7 +210,9 @@ for f in sorted(os.listdir(args.folder)):
                         'timestamp': timestamp,
                         'label_1': label_1,
                         'label_2': label_2,
-                        'features': tokens
+                        'features': tokens,
+                        'domains': domains,
+                        'suffixed': suffixes
                     }
                     t += 1
 
@@ -212,7 +251,6 @@ for f in sorted(os.listdir(args.folder)):
             if timestamp < first_ts or timestamp > last_ts:
                 continue
 
-
             if tweet['in_reply_to_user_id'] is not None:
                 tail = tweet['in_reply_to_user_id']
                 
@@ -226,6 +264,10 @@ for f in sorted(os.listdir(args.folder)):
                 elif len(tweet['entities']['urls']) > 0:
                     interaction = 'reply-url'
                 
+                domains, suffixes = None, None
+                if 'url' in interaction:
+                    urls = ast.literal_eval(row['urls'])
+                    domains, suffixes = divide_url(urls)
                 
                 hashtags = []
                 for hashtag in tweet['entities']['hashtags']:
@@ -240,7 +282,9 @@ for f in sorted(os.listdir(args.folder)):
                     'timestamp': timestamp,
                     'label_1': label_1,
                     'label_2': label_2,
-                    'features': tokens
+                    'features': tokens,
+                    'domains': domains,
+                    'suffixed': suffixes
                 }
                 t += 1
 
@@ -258,6 +302,11 @@ for f in sorted(os.listdir(args.folder)):
                     elif len(tweet['entities']['urls']) > 0:
                         interaction = 'mention-url'
                        
+                    domains, suffixes = None, None
+                    if 'url' in interaction:
+                        urls = ast.literal_eval(row['urls'])
+                        domains, suffixes = divide_url(urls)
+                    
                     hashtags = [] 
                     for hashtag in tweet['entities']['hashtags']:
                         hashtags.append(hashtag['text'])
@@ -271,11 +320,15 @@ for f in sorted(os.listdir(args.folder)):
                         'timestamp': timestamp,
                         'label_1': label_1,
                         'label_2': label_2,
-                        'features': tokens
+                        'features': tokens,
+                        'domains': domains,
+                        'suffixed': suffixes
                     }
                     t += 1
                     
             elif tweet['is_quote_status']:
+                if args.disable_rt:
+                    continue
                 try:
                     tail = tweet['quoted_status']['user']['id']
                     if tail == 0 or tail == None:
@@ -291,6 +344,11 @@ for f in sorted(os.listdir(args.folder)):
                     elif len(tweet['entities']['urls']) != 0 or len(tweet['quoted_status']['entities']['urls']) != 0:
                         interaction = 'rt-url'
                         
+                    domains, suffixes = None, None
+                    if 'url' in interaction:
+                        urls = ast.literal_eval(row['urls'])
+                        domains, suffixes = divide_url(urls)
+                    
                     hashtags = [] 
                     for hashtag in tweet['entities']['hashtags']:
                         hashtags.append(hashtag['text'])
@@ -312,7 +370,9 @@ for f in sorted(os.listdir(args.folder)):
                         'timestamp': timestamp,
                         'label_1': label_1,
                         'label_2': label_2,
-                        'features': tokens
+                        'features': tokens,
+                        'domains': domains,
+                        'suffixed': suffixes
                     }
                     t += 1
                 except:
@@ -351,9 +411,11 @@ for i in dict_inter:
 df = pd.DataFrame.from_dict(dict_inter, orient='index')
 df = df.sort_values('timestamp')
 
-write_name = 'interactions.csv'
+write_name = 'interactions_URLasFEAT.csv'
 if args.disable_twitter:
     write_name = 'NO_TWITTER_' + write_name
+if args.disable_rt:
+    write_name = 'NO_RT_' + write_name
 if args.users:
     df.to_csv(args.folder.split('/')[-2] + '_users_' + write_name, index=False)
 else:

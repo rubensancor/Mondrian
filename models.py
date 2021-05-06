@@ -33,7 +33,6 @@ class Mondrian(nn.Module):
         self.initial_user_embedding = nn.Parameter(torch.Tensor(self.embedding_dim))
         self.initial_action_embedding = nn.Parameter(torch.Tensor(self.embedding_dim))
         
-        # TODO: Decidir que features meterle aqui para ponerle el +x por features
         # +1 for the number of features, in this case is the interaction type but we can add centralities to them
         rnn_input_size_users = rnn_input_size_actions = self.embedding_dim + 1 + num_features
 
@@ -130,7 +129,11 @@ def save_model(model, optimizer, args, epoch, user_embeddings, action_embeddings
         state['user_embeddings_time_series'] = user_embeddings_time_series.data.cpu().numpy()
         state['action_embeddings_time_series'] = action_embeddings_time_series.data.cpu().numpy()
 
-    directory = os.path.join(path, 'saved_models/%s' % args.data)
+    if '/' in args.data:
+        temp = args.data.split('/')[-1]
+        directory = os.path.join(path, 'saved_models/%s' % temp)
+    else:
+        directory = os.path.join(path, 'saved_models/%s' % args.data)
     if not os.path.exists(directory):
         os.makedirs(directory)
 
@@ -141,7 +144,11 @@ def save_model(model, optimizer, args, epoch, user_embeddings, action_embeddings
 # LOAD PREVIOUSLY TRAINED AND SAVED MODEL
 def load_model(model, optimizer, args, epoch):
     modelname = args.model
-    filename = PATH + "saved_models/%s/checkpoint.%s.ep%d.tp%.2f.pth.tar" % (args.data, modelname, epoch, args.train_split)
+    if '/' in args.data:
+        tmp_data = args.data.split('/')[-1]
+        filename = PATH + "saved_models/%s/checkpoint.%s.ep%d.tp%.2f.pth.tar" % (tmp_data, modelname, epoch, args.train_split)
+    else:
+        filename = PATH + "saved_models/%s/checkpoint.%s.ep%d.tp%.2f.pth.tar" % (args.data, modelname, epoch, args.train_split)
     checkpoint = torch.load(filename)
     print("Loading saved embeddings and model: %s" % filename)
     args.start_epoch = checkpoint['epoch']

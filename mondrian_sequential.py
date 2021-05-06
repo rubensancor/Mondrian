@@ -1,6 +1,5 @@
 import time
 import argparse
-import socket
 from utilities import *
 from models import *
 import models as lib
@@ -14,21 +13,26 @@ np.random.seed(SEED)
 torch.backends.cudnn.benchmark = False # reduces the performance
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--data', required=True, help='Data file')
+parser.add_argument('-d', '--data', required=True, help='Data file')
 parser.add_argument('--model', default="mondrain_v0.1", help='Model name to save output in file')
 parser.add_argument('--gpu', default=-1, type=int, help='ID of the gpu to run on. If set to -1 (default), the GPU with most free memory will be chosen.')
-parser.add_argument('--epochs', default=20, type=int, help='Number of epochs to train the model')
+parser.add_argument('--epochs', default=10, type=int, help='Number of epochs to train the model')
 parser.add_argument('--embedding_dim', default=128, type=int, help='Number of dimensions of the dynamic embedding')
 parser.add_argument('-ws', '--wandb_sync', '--wandb_sync=1', action='store_true', help='Check if the run is going to be uploaded to WandB')
 parser.add_argument('--state_change', default=False, type=bool, help='True if training with state change of users along with interaction prediction. False otherwise. By default, set to True.')
+parser.add_argument('--tail_as_feat', default=False, type=bool, help='Tail label as feature.')
 parser.add_argument('--tqdmdis', action='store_true', help='Enable or disable TQDM progress bar.')
 parser.add_argument('--train_split', required=True, type=float, help='Train/test split. Set the percentage for the training set.') 
+parser.add_argument('-n', '--name', help='Name of the run in WandB.')
 parser.add_argument('-t', '--tags', action='append', help='Tags for WandB')
 args = parser.parse_args()
 
 # Set the name of the data file 
 args.dataname = args.data.split('.')[0]
 
+if '/' in args.dataname:
+    args.dataname = args.dataname.split('/')[-1]
+    
 if args.tags is not None:
     tags = args.tags
     tags.append(args.dataname)
@@ -38,7 +42,10 @@ else:
 if not args.wandb_sync:
     os.environ['WANDB_MODE'] = 'dryrun'
 
-wandb.init(project="mondrian", config=args, tags=tags)
+if args.name is not None:
+    wandb.init(project="mondrian", name=args.name, config=args, tags=tags)
+else:    
+    wandb.init(project="mondrian", config=args, tags=tags)
 
 # SET GPU
 if args.gpu == -1:
@@ -53,7 +60,8 @@ os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
  feature_list, 
  head_labels, 
  tail_labels,
- reduced_head_list) = load_data(args, tail_as_feature=True)
+ reduced_head_list,
+ tweet_list) = load_data(args, tail_as_feature=False)
 
 num_users = len(user2id)
 num_actions = len(action2id) + 1 # If the previous action is none
@@ -96,7 +104,7 @@ model.initial_action_embedding = initial_action_embedding
 
 user_embeddings = torch.empty(num_users, args.embedding_dim).cuda()
 nn.init.xavier_uniform_(user_embeddings)
-print(user_embeddings)
+# print(user_embeddings)
 
 action_embeddings = torch.empty(num_actions, args.embedding_dim).cuda()
 nn.init.xavier_uniform_(action_embeddings)

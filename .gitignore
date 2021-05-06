@@ -146,3 +146,4 @@ cython_debug/
 /data
 *.out
 *users.txt
+*.csv

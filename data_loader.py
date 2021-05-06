@@ -22,18 +22,22 @@ def load_data(args, time_scaling=True, tail_as_feature=False):
     reduced_head_list = []
     
     df = pd.read_csv(args.data)
-    # if args.split != 0:
-    #     rows = len(df.index)
-    #     limit = int(rows * (0.15 + (0.05 * (args.split-1)))) # 10%+5%*split is training set + 5% for test set
-    #     df = df.head(limit)
 
+    # is_NaN = df.isnull()
+    # row_has_NaN = is_NaN.any(axis=1)
+    # rows_with_NaN = df[row_has_NaN]
+    
+    # for ind, i in enumerate(row_has_NaN):
+    #     if i == True:
+    #         print(ind)
+    # exit()
     print('*** Loading dataset')
     head_list = df['head'].tolist()
     tail_list = df['tail'].tolist()
     action_list = df['interaction'].tolist()
     head_labels = df['label_1'].tolist()
     tail_labels = df['label_2'].tolist()
-    # feature_list = [[0] * 1] * len(head_list)
+    tweet_list = df['tweet'].tolist()
     feature_list = df['features'].tolist()
     tmp_list = df['timestamp'].tolist()
     start_timestamp = tmp_list[0]
@@ -105,4 +109,25 @@ def load_data(args, time_scaling=True, tail_as_feature=False):
             feature_list, 
             head_labels, 
             tail_labels,
-            reduced_head_list)
+            reduced_head_list,
+            tweet_list)
+
+def get_edited_users(args):
+    print(args)
+    if 'train_split' in vars(args):
+        split = args.train_split
+    else:
+        split = args.data_split
+        
+    if '/' in args.data:
+        tmp_data = args.data.split('/')[-1]
+        filename = "./" + "saved_models/%s/checkpoint.%s.ep%d.tp%.2f.pth.tar" % (tmp_data, args.model, args.epochs, split)
+    else:
+        filename = "./" + "saved_models/%s/checkpoint.%s.ep%d.tp%.2f.pth.tar" % (args.data, args.model, args.epochs, split)
+    checkpoint = torch.load(filename)
+    try:
+        edited_users = checkpoint['edited_users'] 
+    except KeyError:
+        print('There are no edited users saved in this checkpoint')
+        raise
+    return edited_users

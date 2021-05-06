@@ -37,15 +37,16 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--data', required=True, help='Data file')
 parser.add_argument('--model', default="mondrain_v0.1", help='Model name to save output in file')
 parser.add_argument('--gpu', default=-1, type=int, help='ID of the gpu to run on. If set to -1 (default), the GPU with most free memory will be chosen.')
-parser.add_argument('--epoch', default=20, type=int, help='Epoch id to load')
+parser.add_argument('--epoch', default=10, type=int, help='Epoch id to load')
 parser.add_argument('--embedding_dim', default=128, type=int, help='Number of dimensions')
+parser.add_argument('-n', '--name', help='Name of the run in WandB.')
 parser.add_argument('-ws', '--wandb_sync', '--wandb_sync=1', action='store_true', help='Check if the run is going to be uploaded to WandB')
 parser.add_argument('--train_split', required=True, type=float, help='Train split. Set the percentage for the training set.')
 parser.add_argument('--test_size', required=True, type=float, help='Train/test split. Set the percentage for the training set.')
 parser.add_argument('-t', '--tags', action='append', help='Tags for WandB')
 args = parser.parse_args()
 # Set the name of the data file 
-args.dataname = args.data.split('.')[0]
+args.dataname = args.data.split('/')[-1].split('.')[0]
     
 # SET GPU
 args.gpu = select_free_gpu()
@@ -61,7 +62,10 @@ else:
 if not args.wandb_sync:
     os.environ['WANDB_MODE'] = 'dryrun'
 
-wandb.init(project="mondrian", config=args, tags=tags)
+if args.name is not None:
+    wandb.init(project="mondrian", name=args.name, config=args, tags=tags)
+else:    
+    wandb.init(project="mondrian", config=args, tags=tags)
 
 # LOAD NETWORK
 (user2id, user_list_id, user_timediference_list, user_previous_actionid_list,
@@ -70,7 +74,8 @@ wandb.init(project="mondrian", config=args, tags=tags)
  feature_list, 
  head_labels, 
  tail_labels,
- reduced_head_list) = load_data(args, tail_as_feature=True)
+ reduced_head_list,
+ tweet_list) = load_data(args, tail_as_feature=False)
 
 num_users = len(user2id)
 num_actions = len(action2id) + 1 # If the previous action is none
@@ -156,6 +161,8 @@ with trange(train_end_idx, test_end_idx) as progress_bar:
         user_timediff = user_timediference_list[j]
         action_timediff = action_timediference_list[j]
         actionid_previous = user_previous_actionid_list[j]
+        
+        edited_users[userid] = True
 
         # LOAD USER AND action EMBEDDING
         user_embedding_input = user_embeddings[torch.cuda.LongTensor([userid])]
@@ -184,7 +191,6 @@ with trange(train_end_idx, test_end_idx) as progress_bar:
         true_action_distance = euclidean_distances[actionid]
         euclidean_distances_smaller = (euclidean_distances < true_action_distance).data.cpu().numpy()
         true_action_rank = np.sum(euclidean_distances_smaller) + 1
-
         test_ranks.append(true_action_rank)
 
         # UPDATE USER AND action EMBEDDING
@@ -226,6 +232,7 @@ draw_embeddings(args, user_embeddings, reduced_head_list, 'projector')
 # rec10 = sum(np.array(ranks) <= 10)*1.0 / len(ranks)
 # performance_dict['validation'] = [mrr, rec10]
 if args.test_size > 0:
+    # print(test_ranks)
     mrr = np.mean([1.0 / r for r in test_ranks])
     rec3 = sum(np.array(test_ranks) <= 3)*1.0 / len(test_ranks)
 
@@ -252,11 +259,11 @@ X = []
 y = []
 
 for i in range(len(user_embeddings)):
-    #if edited_users[i]:
-    #    X.append(user_embeddings[i].tolist())
-    #    y.append(head_labels[user_list_id.index(i)])
-    X.append(user_embeddings[i].tolist())
-    y.append(head_labels[user_list_id.index(i)])
+    if edited_users[i]:
+        X.append(user_embeddings[i].tolist())
+        y.append(head_labels[user_list_id.index(i)])
+    # X.append(user_embeddings[i].tolist())
+    # y.append(head_labels[user_list_id.index(i)])
 
 print(5 * '*' + ' Data distribution ' + 5 * '*')
 print('Labels: ')
@@ -271,38 +278,50 @@ for train_index, test_index in skf.split(X, y):
     # print("TRAIN:", train_index, "TEST:", test_index)
     X_train, X_test = np.array(X)[train_index.astype(int)], np.array(X)[test_index.astype(int)]
     y_train, y_test = np.array(y)[train_index.astype(int)], np.array(y)[test_index.astype(int)]
- 
+
     # Linear SVC
     clf = LinearSVC(class_weight='balanced')
-    clf.fit(X, y)
+    clf.fit(X_train, y_train)
     predictions = clf.predict(X_test)
     svc_acc.append(clf.score(X_test, y_test))
     svc_f1.append(f1_score(y_test, predictions, average='macro'))
     
     # KNN
     clf = KNeighborsClassifier(n_neighbors=5)
-    clf.fit(X, y)
+    clf.fit(X_train, y_train)
     predictions = clf.predict(X_test)
     knn_acc.append(clf.score(X_test, y_test))
     knn_f1.append(f1_score(y_test, predictions, average='macro'))
     
     # MLP
     clf = MLPClassifier(random_state=1, max_iter=300)
-    clf.fit(X, y)
+    clf.fit(X_train, y_train)
     predictions = clf.predict(X_test)
     mlp_acc.append(clf.score(X_test, y_test))
     mlp_f1.append(f1_score(y_test, predictions, average='macro'))
     
     # RF    
     clf = RandomForestClassifier()
-    clf.fit(X, y)
+    clf.fit(X_train, y_train)
     predictions = clf.predict(X_test)
     rf_acc.append(clf.score(X_test, y_test))
     rf_f1.append(f1_score(y_test, predictions, average='macro'))
     
+    print('\nSPLIT --> %i' % len(svc_acc))
+    user_guessed = []
+    for index, i in enumerate(predictions):
+        if i == y_test[index]:
+            user_guessed.append(True)
+        else:
+            user_guessed.append(False)
+    
+    # for index, i in enumerate(user_guessed):
+    #     if not i:
+    #         print('User id --> %i *** Embedding edited --> %r' % (test_index[index], edited_users[test_index[index]]))
+    
     # DUMMY
     clf = DummyClassifier(strategy='stratified', random_state=1234)
-    clf.fit(X, y)
+    clf.fit(X_train, y_train)
     predictions = clf.predict(X_test)
     dummy_acc.append(clf.score(X_test, y_test))
     dummy_f1.append(f1_score(y_test, predictions, average='macro'))
@@ -319,7 +338,7 @@ if args.test_size > 0:
            'DUMMY_ACC': mean(dummy_acc),
            'DUMMY_F1': mean(dummy_f1),
            'mrr' : mrr,
-           'rec5': rec3})
+           'rec3': rec3})
 else:
     wandb.log({'SVC_ACC': mean(svc_acc),
             'SVC_F1': mean(svc_f1),
