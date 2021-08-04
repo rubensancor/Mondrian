@@ -7,7 +7,7 @@ def rename(path):
     files = os.listdir(path)
 
     for file in files:
-        os.rename(os.path.join(path, file), os.path.join(path, file.replace('\^J', '')))
+        os.rename(os.path.join(path, file), os.path.join(path, file.replace('\^J', '').replace('\n', '')))
         
 def dataset_reducer(path, N):
     df = pd.read_csv(path)
@@ -29,7 +29,7 @@ def dataset_reducer(path, N):
     
 def dataset_stats(path):
     df = pd.read_csv(path)
-    
+    print(path)
     df_malicious = df[df.label_1 == 1]
     print('--- Malicious statistics ---')
     print('Number of users -----> %i' % len(set(df_malicious['head'].tolist())))
@@ -47,18 +47,17 @@ def dataset_size(path):
     return
 
     
+# def prepare_test_splits():
+    
     
 
     
-if __name__ == "__main__":
-    # print('***** CHINA NO TWITTER *****')
-    # dataset_stats('china-2_users_NO_TWITTER_interactions.csv')
+if __name__ == "__main__":    
+    rename('data/userdata/honduras')
     
-    # print('***** SPAIN *****')
-    # dataset_stats('spain_users_interactions_hashtagtoken.csv')
-    
-    # print('***** SPAIN NO TWITTER *****')
-    # dataset_stats('spain_users_NO_TWITTER_interactions.csv')
-    
-    # dataset_stats('spain_users_NO_RT_NO_TWITTER_interactions.csv')
-    dataset_stats('iran-1_users_NO_TWITTER_interactions.csv')
+    # russia = pd.read_csv('russia_users_NO_TWITTER_normalized.csv')
+    # china = pd.read_csv('china-2_users_NO_TWITTER_normalized.csv')
+    # iran = pd.read_csv('iran-1_users_NO_TWITTER_normalized.csv')
+
+    # out = russia.append(iran)
+    # out.to_csv('russia_iran.csv', index=False)

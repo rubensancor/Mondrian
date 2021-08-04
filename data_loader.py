@@ -113,7 +113,6 @@ def load_data(args, time_scaling=True, tail_as_feature=False):
             tweet_list)
 
 def get_edited_users(args):
-    print(args)
     if 'train_split' in vars(args):
         split = args.train_split
     else:

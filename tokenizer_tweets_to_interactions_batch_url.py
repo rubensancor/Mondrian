@@ -23,7 +23,8 @@ def create_hashtag_tokens(hashtags):
     try:
         if isinstance(hashtags, str):
             hashtags = hashtags.strip("'[]").split(',')
-        tokens = tokenizer(hashtags, is_split_into_words=True)['input_ids']
+            
+        tokens = tokenizer(hashtags, is_split_into_words=True, padding='max_length', truncation=True, max_length=256)['input_ids']
     except:
         tokens = [0]
         
@@ -40,7 +41,7 @@ def divide_url(urls):
     return def_urls
 
 def url2token(url):
-    tokens = tokenizer(url, is_split_into_words=True)['input_ids']
+    tokens = tokenizer(url, is_split_into_words=True, padding='max_length', truncation=True, max_length=64)['input_ids']
     return tokens
 
 # Converts tweets from the dataset in interactions with this structure

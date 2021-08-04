@@ -10,7 +10,7 @@ from sentence_transformers import SentenceTransformer
 from sklearn.svm import LinearSVC
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.neural_network import MLPClassifier
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import ShuffleSplit|, StratifiedShuffleSplit
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.dummy import DummyClassifier
 from sklearn.metrics import f1_score
@@ -29,13 +29,15 @@ parser.add_argument('--epochs', default=10, type=int, help='Number of epochs to 
 parser.add_argument('--embedding_dim', default=512, type=int, help='Number of dimensions of the dynamic embedding')
 parser.add_argument('-ws', '--wandb_sync', '--wandb_sync=1', action='store_true', help='Check if the run is going to be uploaded to WandB')
 parser.add_argument('--state_change', default=False, type=bool, help='True if training with state change of users along with interaction prediction. False otherwise. By default, set to True.')
+parser.add_argument('-s', '--splits', choices=['stratify', 'shuffle'], required=True, help='Select the strategy to create the splits')
 parser.add_argument('--tail_as_feat', default=False, type=bool, help='Tail label as feature.')
 parser.add_argument('--tqdmdis', action='store_true', help='Enable or disable TQDM progress bar.')
-parser.add_argument('--data_split', required=True, type=float, help='Train/test split. Set the percentage for the training set.') 
-# parser.add_argument('--test_size', required=True, type=float, help='Train/test split. Set the percentage for the training set.')
+parser.add_argument('--train_split', required=True, type=float, help='Train split. Set the percentage for the training set.') 
+parser.add_argument('--test_size', required=True, type=float, help='Test size. Set the percentage for the testing set.')
 parser.add_argument('-n', '--name', help='Name of the run in WandB.')
 parser.add_argument('-t', '--tags', action='append', help='Tags for WandB')
 args = parser.parse_args()
+
 
 # Set the name of the data file 
 args.dataname = args.data.split('.')[0]
@@ -89,7 +91,8 @@ user_embeddings = torch.empty(num_users, args.embedding_dim).cuda()
 nn.init.xavier_uniform_(user_embeddings)
 
 # SET TRAINING AND TESTING SPLITS
-train_end_idx = int(num_interactions * args.data_split)
+train_end_idx = int(num_interactions * args.train_split)
+test_end_idx = train_end_idx + int(num_interactions * args.test_size)
 
 # PERFORMANCE METRICS
 test_ranks = []
@@ -106,12 +109,17 @@ dummy_f1 = []
 
 # Get edited users
 edited_users = get_edited_users(args)
+tweet_embeddings_list = get_tweet_embeddings(args)
 
 with trange(train_end_idx) as progress_bar1:
     for j in progress_bar1:
         userid = user_list_id[j]
-        tweet_embedding = model.encode(tweet_list[j])
-        tweet_embedding_tensor = torch.Tensor(tweet_embedding).cuda()
+        if tweet_embeddings_list is None:
+            tweet_embedding = model.encode(tweet_list[j])
+            tweet_embedding_tensor = torch.Tensor(tweet_embedding).cuda()
+        else:
+            tweet_embedding = tweet_embeddings_list[j]
+            tweet_embedding_tensor = torch.Tensor(tweet_embedding).cuda()
         
         # print(tweet_embedding_tensor.shape)
         # print(torch.cat((user_embeddings[userid],tweet_embedding_tensor),0))
@@ -120,9 +128,14 @@ with trange(train_end_idx) as progress_bar1:
         #     print(userid)
         edited_sentences[userid] += 1
         user_embeddings[userid] = user_embeddings[userid].add_(tweet_embedding_tensor)
-        
-        
 
+for i in range(train_end_idx, test_end_idx):
+    userid = user_list_id[i]
+    edited_users[userid] = True
+    edited_sentences[userid] += 1
+
+
+# Make the avg of the tweet embeddings
 for userid in range(num_users):
     if edited_sentences[userid] > 1:
         user_embeddings[userid] = torch.div(user_embeddings[userid], edited_sentences[userid])
@@ -139,7 +152,12 @@ print(5 * '*' + ' Data distribution ' + 5 * '*')
 print('Labels: ')
 print(Counter(y))
 
-skf = StratifiedKFold(n_splits=5)
+#skf = StratifiedKFold(n_splits=100, random_state=SEED, shuffle=True)
+if args.splits == 'shuffle':
+    skf = ShuffleSplit(n_splits=100, test_size=0.2, random_state=SEED)
+else:
+    skf = StratifiedShuffleSplit(n_splits=100, test_size=0.2, random_state=SEED)
+    
 skf.get_n_splits(X, y)
 
 for train_index, test_index in skf.split(X, y):

@@ -21,7 +21,7 @@ from statistics import mean
 from sklearn.svm import LinearSVC
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.neural_network import MLPClassifier
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import ShuffleSplit, StratifiedShuffleSplit
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.dummy import DummyClassifier
 from sklearn.metrics import f1_score
@@ -34,12 +34,13 @@ torch.backends.cudnn.benchmark = False # reduces the performance
 
 # INITIALIZE PARAMETERS
 parser = argparse.ArgumentParser()
-parser.add_argument('--data', required=True, help='Data file')
+parser.add_argument('-d','--data', required=True, help='Data file')
 parser.add_argument('--model', default="mondrain_v0.1", help='Model name to save output in file')
 parser.add_argument('--gpu', default=-1, type=int, help='ID of the gpu to run on. If set to -1 (default), the GPU with most free memory will be chosen.')
-parser.add_argument('--epoch', default=10, type=int, help='Epoch id to load')
+parser.add_argument('--epochs', default=10, type=int, help='Epoch id to load')
 parser.add_argument('--embedding_dim', default=128, type=int, help='Number of dimensions')
 parser.add_argument('-n', '--name', help='Name of the run in WandB.')
+parser.add_argument('-s', '--splits', choices=['stratify', 'shuffle'], required=True, help='Select the strategy to create the splits')
 parser.add_argument('-ws', '--wandb_sync', '--wandb_sync=1', action='store_true', help='Check if the run is going to be uploaded to WandB')
 parser.add_argument('--train_split', required=True, type=float, help='Train split. Set the percentage for the training set.')
 parser.add_argument('--test_size', required=True, type=float, help='Train/test split. Set the percentage for the training set.')
@@ -47,7 +48,7 @@ parser.add_argument('-t', '--tags', action='append', help='Tags for WandB')
 args = parser.parse_args()
 # Set the name of the data file 
 args.dataname = args.data.split('/')[-1].split('.')[0]
-    
+
 # SET GPU
 args.gpu = select_free_gpu()
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
@@ -98,7 +99,7 @@ learning_rate = 1e-3
 optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-5)
 
 # LOAD THE MODEL
-model, optimizer, user_embeddings_dystat, action_embeddings_dystat, user_embeddings_timeseries, action_embeddings_timeseries, train_end_idx_training, edited_users = load_model(model, optimizer, args, args.epoch)
+model, optimizer, user_embeddings_dystat, action_embeddings_dystat, user_embeddings_timeseries, action_embeddings_timeseries, train_end_idx_training, edited_users = load_model(model, optimizer, args, args.epochs)
 if train_end_idx != train_end_idx_training:
     sys.exit('Training proportion during training and testing are different. Aborting.')
 
@@ -119,8 +120,8 @@ user_embeddings_static = user_embeddings_dystat[:, args.embedding_dim:].detach()
 user_embeddings_static = user_embeddings_static.clone()
 
 # Draw embeddings for visualization
-prepare_data_folder(args, 'projector')
-draw_embeddings(args, user_embeddings, reduced_head_list, 'projector', True)
+# prepare_data_folder(args, 'projector')
+# draw_embeddings(args, user_embeddings, reduced_head_list, 'projector', True)
 
 # PERFORMANCE METRICS
 test_ranks = []
@@ -210,9 +211,10 @@ with trange(train_end_idx, test_end_idx) as progress_bar:
         # UPDATE THE MODEL IN REAL-TIME USING ERRORS MADE IN THE PAST PREDICTION
         # if timestamp - tbatch_start_time > tbatch_timespan:
         # tbatch_start_time = timestamp
-        loss.backward()
-        optimizer.step()
-        optimizer.zero_grad()
+        # RUBEN --> QUITAMOS EL UPDATE PORQUE NO SABEMOS LA REALIDAD
+        #loss.backward()
+        #optimizer.step()
+        #optimizer.zero_grad()
         
         # RESET LOSS FOR NEXT T-BATCH
         loss = 0
@@ -254,7 +256,6 @@ if args.test_size > 0:
 
 # fw.flush()
 # fw.close()
-
 X = []
 y = []
 
@@ -269,16 +270,17 @@ print(5 * '*' + ' Data distribution ' + 5 * '*')
 print('Labels: ')
 print(Counter(y))
 
-skf = StratifiedKFold(n_splits=5)
+if args.splits == 'shuffle':
+    skf = ShuffleSplit(n_splits=100, test_size=0.2, random_state=SEED)
+else:
+    skf = StratifiedShuffleSplit(n_splits=100, test_size=0.2, random_state=SEED)
 skf.get_n_splits(X, y)
-
-
 
 for train_index, test_index in skf.split(X, y):
     # print("TRAIN:", train_index, "TEST:", test_index)
     X_train, X_test = np.array(X)[train_index.astype(int)], np.array(X)[test_index.astype(int)]
     y_train, y_test = np.array(y)[train_index.astype(int)], np.array(y)[test_index.astype(int)]
-
+    
     # Linear SVC
     clf = LinearSVC(class_weight='balanced')
     clf.fit(X_train, y_train)
@@ -307,20 +309,10 @@ for train_index, test_index in skf.split(X, y):
     rf_acc.append(clf.score(X_test, y_test))
     rf_f1.append(f1_score(y_test, predictions, average='macro'))
     
-    print('\nSPLIT --> %i' % len(svc_acc))
-    user_guessed = []
-    for index, i in enumerate(predictions):
-        if i == y_test[index]:
-            user_guessed.append(True)
-        else:
-            user_guessed.append(False)
-    
-    # for index, i in enumerate(user_guessed):
-    #     if not i:
-    #         print('User id --> %i *** Embedding edited --> %r' % (test_index[index], edited_users[test_index[index]]))
+    # print('\nSPLIT --> %i' % len(svc_acc))
     
     # DUMMY
-    clf = DummyClassifier(strategy='stratified', random_state=1234)
+    clf = DummyClassifier(strategy='stratified', random_state=SEED)
     clf.fit(X_train, y_train)
     predictions = clf.predict(X_test)
     dummy_acc.append(clf.score(X_test, y_test))

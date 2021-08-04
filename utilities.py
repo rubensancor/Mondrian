@@ -1,4 +1,5 @@
 import os
+import csv
 from sys import exec_prefix
 import torch
 import gpustat
@@ -25,6 +26,14 @@ def prepare_data_folder(args, extra_folder=None ,path=PATH):
     if not os.path.exists(directory):
         os.makedirs(directory)
 
+def get_tweet_embeddings(args, path=PATH):
+    filepath = os.path.join(path, 'embeddings/tweets/%s.txt' % args.dataname)
+    if os.path.isfile(filepath):
+        with open(filepath, newline='') as f:
+            return np.loadtxt(filepath)
+    else:
+        return None
+        
 
 def draw_initial_embeddings(model, name, user_list_id, feature_list, user_timediference_list, user_previous_actionid_list, action_embeddings, user_embeddings, head_labels):
     users_first_tensor = None
